@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-test/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.langfuse-voice-state.json
+*.log
+.DS_Store
