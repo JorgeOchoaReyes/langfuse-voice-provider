@@ -30,6 +30,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
 
       # Restore the hashes from the previous run so bidirectional sync can tell
       # which side actually changed.
@@ -40,7 +41,31 @@ jobs:
           key: langfuse-voice-state-${{ github.run_id }}
           restore-keys: langfuse-voice-state-
 
+      # A repository with no Langfuse credentials has nothing to sync. Say so
+      # and finish green, rather than failing this job on every scheduled run.
+      - name: Check credentials
+        id: credentials
+        env:
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+        run: |
+          if [ -n "$LANGFUSE_PUBLIC_KEY" ] && [ -n "$LANGFUSE_SECRET_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping sync: LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY are not set. Add them as repository secrets, along with the API key for each provider you bind to, to enable this workflow."
+          fi
+
+      # Build from the checkout rather than `npx langfuse-voice-provider`, so
+      # this runs against the committed source and needs no npm release.
+      - name: Build
+        if: steps.credentials.outputs.configured == 'true'
+        run: |
+          npm ci
+          npm run build
+
       - name: Sync
+        if: steps.credentials.outputs.configured == 'true'
         env:
           LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
@@ -48,10 +73,13 @@ jobs:
           RETELL_API_KEY: ${{ secrets.RETELL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           VAPI_API_KEY: ${{ secrets.VAPI_API_KEY }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          npx --yes langfuse-voice-provider sync \
-            ${{ inputs.dry_run && '--dry-run' || '' }} \
-            --log-level info
+          if [ "$DRY_RUN" = "true" ]; then
+            node dist/cli.js sync --dry-run --log-level info
+          else
+            node dist/cli.js sync --log-level info
+          fi
 
       - name: Save sync state
         if: always()
