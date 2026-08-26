@@ -600,11 +600,13 @@ test("an unmanaged field does not make a binding drift forever", async () => {
   const { engine } = makeEngine(config, api, store);
 
   // Seed the baseline so the first divergence resolves as a Langfuse-side edit.
+  // The provider hash describes the agent's FULL document, greeting included,
+  // which is what a real prior sync would have recorded.
   await store.set("vapi:asst_1", {
     langfuseHash: "stale",
     providerHash: (await import("../src/core/hash.js")).hashDocument({
       text: "Old text.",
-      fields: {},
+      fields: { firstMessage: "Provider greeting." },
     }),
     langfuseVersion: 1,
     lastSyncAt: "2026-01-01T00:00:00.000Z",
@@ -647,4 +649,84 @@ test("a pull captures fields that were not managed before", async () => {
   // Now that it is recorded, it is managed: a later push governs it.
   const second = await engine.run();
   assert.equal(second.counts["in-sync"], 1);
+});
+
+test("a Langfuse-side edit that drops the field bookkeeping still pushes", async () => {
+  // The path a prompt takes when someone edits it in the Langfuse UI, or via
+  // the API without echoing `config`: the new version carries no
+  // `voiceProvider.fields`, so the managed field set shrinks to nothing.
+  // Change detection must still see that only Langfuse moved.
+  const api = new MockApi();
+  seedRetell(api, {
+    agentId: "agent_1",
+    llmId: "llm_1",
+    generalPrompt: "Original prompt.",
+    beginMessage: "Hi!",
+  });
+  const config = buildConfig([
+    { id: "support", provider: "retell", agentId: "agent_1", prompt: "voice/support" },
+  ]);
+  const { engine } = makeEngine(config, api);
+
+  // Seed Langfuse from the live agent; this captures beginMessage as managed.
+  const seeded = await engine.run();
+  assert.equal(seeded.counts["created-prompt"], 1);
+
+  // A new version authored without the bookkeeping.
+  api.prompts.set("voice/support", [
+    ...(api.prompts.get("voice/support") ?? []).map((v) => ({ ...v, labels: [] })),
+    {
+      name: "voice/support",
+      version: 2,
+      type: "text" as const,
+      prompt: "Edited in the Langfuse UI.",
+      labels: ["production"],
+      tags: [],
+      commitMessage: null,
+      config: {},
+    },
+  ]);
+
+  const report = await engine.run();
+
+  assert.equal(report.counts.conflict, 0, "a one-sided edit must not conflict");
+  assert.equal(report.counts.pushed, 1);
+  const llm = api.retellLlms.get("llm_1") as Record<string, unknown>;
+  assert.equal(llm["general_prompt"], "Edited in the Langfuse UI.");
+  // The greeting is unmanaged by that version, so it must survive untouched.
+  assert.equal(llm["begin_message"], "Hi!");
+
+  // And the pass after that settles rather than flip-flopping.
+  const third = await engine.run();
+  assert.equal(third.counts["in-sync"], 1);
+});
+
+test("a push records the agent's full document, not just what it wrote", async () => {
+  const api = new MockApi();
+  seedVapi(api, {
+    assistantId: "asst_1",
+    prompt: "Old.",
+    firstMessage: "Provider greeting.",
+  });
+  seedLangfusePrompt(api, { name: "voice/outbound", text: "New." });
+  const config = buildConfig([
+    {
+      provider: "vapi",
+      agentId: "asst_1",
+      prompt: "voice/outbound",
+      direction: "langfuse-to-provider",
+    },
+  ]);
+  const store = new MemoryStateStore();
+  const { engine } = makeEngine(config, api, store);
+
+  await engine.run();
+
+  const { hashDocument } = await import("../src/core/hash.js");
+  const recorded = await store.get("vapi:asst_1");
+  assert.equal(
+    recorded?.providerHash,
+    hashDocument({ text: "New.", fields: { firstMessage: "Provider greeting." } }),
+    "the recorded hash must describe the agent as it now stands",
+  );
 });

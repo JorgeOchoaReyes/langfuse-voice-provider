@@ -112,6 +112,141 @@ field bookkeeping at all. Without the rule, their empty field set would read as
 actually made. A pull captures the agent's full field set, so anything
 unmanaged today becomes managed the first time the provider side wins.
 
+### The moving parts
+
+```
+                    ┌───────────────────────────────────┐
+                    │            sync engine            │
+   Langfuse  ◀────▶ │  hash · compare · decide · write  │ ◀────▶  provider adapter
+   prompt API       └───────────────┬───────────────────┘         (retell/11labs/vapi)
+                                    │
+                              state store
+                     (hashes from the last good sync)
+```
+
+- **Provider adapters** know one thing each: where the prompt lives on that
+  platform, and how to write it back without disturbing anything else.
+- **The Langfuse client** reads a prompt at a label and appends new versions.
+- **The engine** owns all the judgement: hashing, comparison, conflict
+  resolution, and what to record afterwards. Adapters never decide anything.
+- **The state store** remembers the two hashes from the last successful sync.
+  That memory is what turns "these differ" into "the provider moved".
+
+### A pass, step by step
+
+For each enabled binding:
+
+1. **Read the provider.** Resolve the agent, pull its prompt and extra fields.
+   An agent with no single prompt to own is skipped with a reason.
+2. **Read Langfuse** at the binding's label. Missing prompt → seed it from the
+   live agent and stop; that is the whole onboarding path.
+3. **Project.** Keep only the fields this binding manages (see *Field
+   ownership*), and render any configured `variables`.
+4. **Compare.** Hash both sides. Equal → record and stop.
+5. **Decide.** One-way directions answer immediately. `bidirectional` hashes
+   each side *in full* — never projected onto the managed set — and compares
+   against the stored hashes to see which actually moved. "Did this side
+   change?" has to be a property of that side alone, or a Langfuse edit that
+   drops the field bookkeeping would look like a provider edit too. If both
+   moved — or state is missing — `conflictPolicy` decides.
+6. **Write.** Push re-reads the agent and PATCHes only the owned keys. Pull
+   appends a Langfuse version and moves the label onto it.
+7. **Record** both hashes and the version, so the next pass has a baseline.
+
+Each binding is isolated: one failure is reported and the rest still run.
+
+### A worked example
+
+Adopt a running Retell agent, no prompt in Langfuse yet:
+
+```console
+$ langfuse-voice sync
++ support  created-prompt created Langfuse prompt "voice/support" v1 from retell
+```
+
+Someone edits the prompt in the Retell dashboard. The next pass notices only
+the provider moved, so it captures the edit as a version:
+
+```console
+$ langfuse-voice sync
+< support  pulled         pulled retell agent_1 -> Langfuse "voice/support" (text changed (+42 chars)) as v2
+```
+
+Now edit the prompt in Langfuse instead. Only that side moved, so it goes out
+to the agent — no new version, Langfuse was already the source:
+
+```console
+$ langfuse-voice sync
+> support  pushed         pushed Langfuse v3 -> retell agent_1 (text changed (-17 chars))
+```
+
+Both sides edited between passes? Nothing is touched, and the run exits `2`:
+
+```console
+$ langfuse-voice sync
+! support  conflict       Both sides changed since the last sync and conflictPolicy is "manual". Resolve by re-running with --conflict prefer-langfuse or --conflict prefer-provider, or by making the two sides match.
+
+$ langfuse-voice sync --conflict prefer-provider   # or prefer-langfuse
+```
+
+`< pulled`, `> pushed`, `= in-sync`, `+ created`, `! conflict`, `- skipped`,
+`x error`. Diffs report field names and character deltas, never prompt bodies,
+so logs stay safe to paste.
+
+### What a synced prompt looks like in Langfuse
+
+```jsonc
+{
+  "name": "voice/support",
+  "version": 2,
+  "type": "text",
+  "prompt": "You are a support agent. Always confirm the caller identity first.",
+  "labels": ["production"],
+  "tags": ["voice"],
+  "commitMessage": "Synced from retell agent agent_1: text changed (+42 chars)",
+  "config": {
+    "voiceProvider": {          // this package owns exactly this key
+      "provider": "retell",
+      "agentId": "agent_1",
+      "fields": { "beginMessage": "Hi!" },
+      "origin": { "agentId": "agent_1", "llmId": "llm_1" },
+      "syncedAt": "2026-08-26T15:58:10.402Z",
+      "syncedFrom": "provider"
+    }
+  }
+}
+```
+
+A normal Langfuse prompt in every respect — diffable, labellable, rollback-able
+in the UI. `origin` records which agent (and which Retell LLM) the text came
+from; any unrelated application config already on the prompt is preserved.
+
+### The state file
+
+```jsonc
+{
+  "version": 1,
+  "bindings": {
+    "support-line": {
+      "langfuseHash": "9f2c1b7ae4d3…",   // both sides as of the last good sync
+      "providerHash": "9f2c1b7ae4d3…",
+      "langfuseVersion": 2,
+      "lastSyncAt": "2026-08-26T15:58:10.402Z",
+      "lastDirection": "pull"
+    }
+  }
+}
+```
+
+Hashes cover the prompt text plus managed fields, after normalising line
+endings and trailing whitespace — a copy-paste round trip through a dashboard
+is not a prompt change.
+
+This file is advisory, never authoritative. Lose it and nothing breaks: the
+provider is re-read every pass and Langfuse versions are immutable. The only
+cost is one conflict-policy decision per binding on the next run, which is
+exactly why the default policy refuses to guess.
+
 ## Directions and conflicts
 
 Set per binding, or under `defaults`:
@@ -302,7 +437,7 @@ conflict handling lives in the engine, not the adapters.
 ```bash
 npm install
 npm run typecheck
-npm test          # 106 tests, no network
+npm test          # 108 tests, no network
 ```
 
 Tests run against in-memory fakes of all four APIs that mirror the real request

@@ -281,7 +281,7 @@ export class SyncEngine {
       await this.recordState(
         binding,
         langfuseDoc,
-        providerDoc,
+        fullProviderDoc,
         langfusePrompt!.version,
         "none",
       );
@@ -295,7 +295,7 @@ export class SyncEngine {
       binding,
       direction,
       langfuseDoc,
-      providerDoc,
+      fullProviderDoc,
     );
 
     if (decision === "conflict") {
@@ -331,10 +331,18 @@ export class SyncEngine {
         };
       }
       await provider.setPrompt(target, renderedLangfuseDoc);
+      // setPrompt writes the text and the managed fields, and leaves every
+      // other field on the agent alone — so the agent's full document
+      // afterwards is the old one with the managed fields overwritten.
+      // Recording anything narrower would read as a provider-side edit on the
+      // next pass.
       await this.recordState(
         binding,
         langfuseDoc,
-        renderedLangfuseDoc,
+        {
+          text: renderedLangfuseDoc.text,
+          fields: { ...fullProviderDoc.fields, ...renderedLangfuseDoc.fields },
+        },
         langfusePrompt!.version,
         "push",
       );
@@ -398,7 +406,15 @@ export class SyncEngine {
     binding: Binding,
     direction: Binding["direction"],
     langfuseDoc: PromptDocument,
-    providerDoc: PromptDocument,
+    /**
+     * The provider's *full* document, never one projected onto the managed
+     * field set. "Did this side change?" has to be a property of that side
+     * alone: the managed set is derived from whatever the Langfuse prompt
+     * happens to carry, so projecting here would make a Langfuse-side edit
+     * that drops the field bookkeeping look like a provider-side edit too,
+     * and turn an ordinary push into a phantom conflict.
+     */
+    fullProviderDoc: PromptDocument,
   ): Promise<"push" | "pull" | "conflict"> {
     if (direction === "langfuse-to-provider") return "push";
     if (direction === "provider-to-langfuse") return "pull";
@@ -407,7 +423,7 @@ export class SyncEngine {
     if (!state) return applyPolicy(binding.conflictPolicy);
 
     const langfuseChanged = hashDocument(langfuseDoc) !== state.langfuseHash;
-    const providerChanged = hashDocument(providerDoc) !== state.providerHash;
+    const providerChanged = hashDocument(fullProviderDoc) !== state.providerHash;
 
     if (langfuseChanged && !providerChanged) return "push";
     if (providerChanged && !langfuseChanged) return "pull";
