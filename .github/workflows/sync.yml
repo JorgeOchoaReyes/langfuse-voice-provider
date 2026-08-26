@@ -1,0 +1,61 @@
+# Run the sync on a schedule and on demand, without hosting anything.
+#
+# This is the cheapest deployment: no server, no container. The trade-off is
+# that GitHub Actions has no persistent disk, so the sync state is cached
+# between runs. If the cache is ever cold, bidirectional bindings fall back to
+# their conflict policy for that run.
+name: Sync voice prompts with Langfuse
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Report the plan without writing"
+        type: boolean
+        default: false
+
+concurrency:
+  group: langfuse-voice-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Restore the hashes from the previous run so bidirectional sync can tell
+      # which side actually changed.
+      - name: Restore sync state
+        uses: actions/cache/restore@v4
+        with:
+          path: .langfuse-voice-state.json
+          key: langfuse-voice-state-${{ github.run_id }}
+          restore-keys: langfuse-voice-state-
+
+      - name: Sync
+        env:
+          LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          RETELL_API_KEY: ${{ secrets.RETELL_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          VAPI_API_KEY: ${{ secrets.VAPI_API_KEY }}
+        run: |
+          npx --yes langfuse-voice-provider sync \
+            ${{ inputs.dry_run && '--dry-run' || '' }} \
+            --log-level info
+
+      - name: Save sync state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .langfuse-voice-state.json
+          key: langfuse-voice-state-${{ github.run_id }}

@@ -1,0 +1,85 @@
+# A worked example covering all three providers and the common directions.
+# Copy it, replace the ids, and delete what you do not need.
+
+langfuse:
+  baseUrl: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
+  # Keys come from LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY.
+
+defaults:
+  direction: bidirectional
+  conflictPolicy: manual
+  label: production
+  syncFields: true
+  tags: [voice]
+
+state:
+  driver: file
+  path: /data/langfuse-voice-state.json
+
+watch:
+  intervalSeconds: 60
+  jitter: 0.1
+
+server:
+  port: 8080
+  # Secret comes from WEBHOOK_SECRET.
+
+logging:
+  level: info
+
+bindings:
+  # 1. Retell, fully bidirectional.
+  #    Prompt edits made in the Retell dashboard become new Langfuse versions;
+  #    edits made in Langfuse are pushed back to the agent.
+  - id: support-line
+    provider: retell
+    agentId: agent_0123456789abcdef
+    prompt: voice/support-line
+    tags: [inbound, tier-1]
+
+  # 2. ElevenLabs, Langfuse as the single source of truth.
+  #    Dashboard edits are overwritten on the next pass — useful once a prompt
+  #    is under review and should only change through Langfuse.
+  - id: onboarding
+    provider: elevenlabs
+    agentId: agent_fedcba9876543210
+    prompt: voice/onboarding
+    direction: langfuse-to-provider
+
+  # 3. Vapi, provider as the source of truth.
+  #    Nothing is written to Vapi; Langfuse just records every change made in
+  #    the dashboard, which is the low-risk way to start.
+  - id: outbound-qualifier
+    provider: vapi
+    agentId: 00000000-0000-0000-0000-000000000000
+    prompt: voice/outbound-qualifier
+    direction: provider-to-langfuse
+
+  # 4. A staging agent driven from a non-production label, with the environment
+  #    name baked into the prompt at push time.
+  - id: support-line-staging
+    provider: retell
+    agentId: agent_aaaabbbbccccdddd
+    prompt: voice/support-line
+    label: staging
+    direction: langfuse-to-provider
+    variables:
+      environment: staging
+      company_name: Acme
+
+  # 5. Retell agent whose Retell LLM id is known, skipping the agent lookup,
+  #    and syncing only the prompt body — the greeting stays hand-managed.
+  - id: billing
+    provider: retell
+    agentId: agent_1111222233334444
+    prompt: voice/billing
+    syncFields: false
+    options:
+      llmId: llm_5555666677778888
+
+  # 6. Temporarily parked. Kept for the record, never contacted.
+  - id: legacy-line
+    provider: vapi
+    agentId: 11111111-1111-1111-1111-111111111111
+    prompt: voice/legacy-line
+    enabled: false

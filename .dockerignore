@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-test
+test
+.git
+.github
+*.log
+.env
+.env.*
+!.env.example
+.langfuse-voice-state.json

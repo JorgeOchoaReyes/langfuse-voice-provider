@@ -1,0 +1,24 @@
+services:
+  langfuse-voice-sync:
+    build: .
+    restart: unless-stopped
+    environment:
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:?set LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:?set LANGFUSE_SECRET_KEY}
+      RETELL_API_KEY: ${RETELL_API_KEY:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      VAPI_API_KEY: ${VAPI_API_KEY:-}
+      # Required before /sync and /webhooks/* will accept anything.
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PORT: "8080"
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - ./langfuse-voice.config.yaml:/app/langfuse-voice.config.yaml:ro
+      - sync-state:/data
+    command: ["serve"]
+
+volumes:
+  sync-state:
