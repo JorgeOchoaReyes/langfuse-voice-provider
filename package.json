@@ -42,7 +42,7 @@
     "build:test": "tsc -p tsconfig.json",
     "clean": "rm -rf dist dist-test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build:test && node --test \"dist-test/test/*.test.js\"",
+    "test": "npm run build:test && node --test dist-test/test/*.test.js",
     "start": "node dist/cli.js watch",
     "prepublishOnly": "npm run clean && npm run build"
   },
