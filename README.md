@@ -322,10 +322,17 @@ The compose file mounts your config read-only and keeps sync state in a named
 volume. Without a persistent volume the sync still works, but bidirectional
 bindings fall back to their conflict policy on the first run after a restart.
 
-### GitHub Actions
+### On a schedule, with no hosting
 
-`.github/workflows/sync.yml` runs the sync on a schedule with no hosting at
-all, caching the state file between runs.
+A cron runner works too — anything that can run `sync` periodically and keep
+the state file between runs. For GitHub Actions that means a `schedule:`
+trigger plus `actions/cache` for `.langfuse-voice-state.json`; without that
+cache every run starts with no baseline, so bidirectional bindings fall back
+to their conflict policy each time.
+
+No such workflow ships in this repository: scheduled Actions run whether or
+not the sync is configured, and an unconfigured repo just burns runner minutes.
+Add one when you have credentials in place and know you want that cadence.
 
 ## Configuration
 
